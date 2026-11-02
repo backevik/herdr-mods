@@ -62,7 +62,7 @@ Rows are sorted in that order, then oldest commit first. "in use" wins over "cha
 - **One mod**, `mods/worktree-janitor/`: `main.js`, `mod.json` and `spinner.svg` (a 24px ring: a faint full circle and a quarter arc, `stroke="currentColor"`). No `layouts/` folder.
 - **`mod.json`:** `{ "place": "none", "title": "Worktrees", "overlay": { "kind": "dialog", "width": 860, "height": 0.8 } }`.
 - **`keys.json` snippet**, merged into the person's keys: `{ "global": { "ctrl-alt-cmd-j": "mod.open:worktree-janitor" } }`.
-- **A `View`** using `gpui-kit` (`div`, `svg`), `gpui-base` (`v_flex`, `h_flex`, `Scrollbar`) and `herdr` (`exec`, `home`, `spaces`, `panes`, `terminals`, `theme`, `run`, `notify`, `props`, `closeOverlay`, `shared`, `setShared`). Buttons and checkboxes are plain styled `h_flex` and `div` elements with `on_click`. The spinner is `svg("mods/worktree-janitor/spinner.svg").w(12).h(12).spin(900)`.
+- **A `View`** in plain JavaScript (herdr-app runs no TypeScript), typed with JSDoc against the app's `gpui-kit.d.ts`, using `gpui-kit` (`div`, `svg`), `gpui-base` (`v_flex`, `h_flex`, `Scrollbar`) and `herdr` (`exec`, `home`, `spaces`, `panes`, `terminals`, `theme`, `run`, `notify`, `props`, `closeOverlay`, `shared`, `setShared`). Buttons and checkboxes are plain styled `h_flex` and `div` elements with `on_click`. The spinner is `svg("mods/worktree-janitor/spinner.svg").w(12).h(12).spin(900)`.
 - **Folder scan:** `fs.readdir(…, { withFileTypes: true })` from `fs/promises`, two levels under `~/.herdr/worktrees`.
 - **One `sh -c` probe per checkout**, path as `$1`, printing tab-separated lines: `git rev-parse --show-toplevel`, `git rev-parse --path-format=absolute --git-common-dir` (the main checkout; strip a trailing `/.git`), `git symbolic-ref --short -q HEAD`, `git rev-parse -q --verify HEAD`, `git log -1 --format=%ct`, `git rev-list --count HEAD --not --remotes`, and `git --no-optional-locks -c core.fsmonitor=false status --porcelain | wc -l`. A nonzero exit, or a toplevel that isn't the folder, means "not a worktree".
 - **PR lookup:** `gh pr list --head <branch> --state all --limit 20 --json number,state,headRefOid,url`, run in the main checkout. Take the open PR if there is one, else the highest number.
@@ -85,7 +85,7 @@ Rows are sorted in that order, then oldest commit first. "in use" wins over "cha
 
 ## Done when
 
-- `herdr-app check mods/worktree-janitor` passes.
+- `herdr-app check mods/worktree-janitor` passes, and `tsc -p mods/worktree-janitor/jsconfig.json` reports no errors.
 - `ctrl-alt-cmd-j` opens the dialog; opening it a second time shows the list at once, with "checked … ago" under refresh.
 - Every checkout in `~/.herdr/worktrees/*/*` has a row, and its status and notes match `git status`, `git rev-list` and `gh pr list --head` run by hand.
 - A checkout open in a space shows "in use" and is never counted for purge; closing the space changes it without a refresh.

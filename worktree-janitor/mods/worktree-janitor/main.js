@@ -1,17 +1,54 @@
 // Worktrees under ~/.herdr/worktrees/<repo>/<checkout>, each with a status from its
 // PR (gh), its working tree and whether a space or terminal is in it. Remove takes the
 // checkout, its folder and its local branch. Purge removes every checkout the rules allow.
+//
+// Plain JavaScript (herdr-app runs no TypeScript), typed with JSDoc against the app's
+// gpui-kit.d.ts. `../../../check.sh` type-checks it.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
 import { exec, home, spaces, panes, terminals, theme, run, notify, props, closeOverlay, shared, setShared } from "herdr";
 import * as fs from "fs/promises";
 
+/** @typedef {import("gpui-kit").Context} Context */
+/** @typedef {import("gpui-kit").AsyncContext} AsyncContext */
+/** @typedef {import("gpui-kit").Color} Color */
+/** @typedef {import("gpui-kit").Element} Element */
+
+/** @typedef {{ merged: boolean, closed: boolean, stale: boolean, staleDays: number }} Rules */
+/** @typedef {"merged" | "closed" | "stale"} Rule */
+/** @typedef {{ repo: string, path: string, name: string }} Folder */
+/** @typedef {{ number: number, state: "OPEN" | "MERGED" | "CLOSED", headRefOid: string, url: string }} PullRequest */
+/** @typedef {PullRequest | { error: string } | null} PrLookup */
+/**
+ * What git says about a checkout, and its PR once looked up.
+ * @typedef {Folder & {
+ *   registered: boolean,
+ *   main: string,
+ *   branch: string | null,
+ *   head: string | null,
+ *   at: number,
+ *   unpushed: number,
+ *   dirty: number,
+ *   pr?: PrLookup,
+ * }} Checkout
+ */
+/** @typedef {"merged" | "closed" | "no PR" | "PR open" | "detached" | "PR unknown" | "changes" | "in use" | "not a worktree"} Status */
+/** @typedef {"done" | "muted" | "dim" | "working" | "blocked" | "accent"} Tone */
+/**
+ * status: what the row says. safe: removing loses nothing git can't get back.
+ * purge: the rules include it.
+ * @typedef {{ status: Status, tone: Tone, safe: boolean, purge: boolean, notes: string[] }} Assessment
+ */
+/** @typedef {Checkout & Assessment} Row */
+/** @typedef {{ at: number, list: Checkout[] }} Cache */
+
 const ROOT = () => `${home()}/.herdr/worktrees`;
 // Same volume as ROOT, so moving a checkout here is an instant rename.
 const TRASH = () => `${home()}/.herdr/worktrees-trash`;
 const RULES = "worktree-janitor.rules";
 const CACHE = "worktree-janitor.cache";
+/** @type {Rules} */
 const DEFAULT_RULES = { merged: true, closed: false, stale: false, staleDays: 14 };
 const DAY = 86400;
 
@@ -28,19 +65,30 @@ printf 'unpushed\\t%s\\n' "$(git rev-list --count HEAD --not --remotes 2>/dev/nu
 printf 'dirty\\t%s\\n' "$(git --no-optional-locks -c core.fsmonitor=false status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 `;
 
+/** @param {string} p @param {string} dir */
 const inside = (p, dir) => p === dir || p.startsWith(dir + "/");
+/** @param {string} p */
 const tilde = (p) => (p.startsWith(home()) ? `~${p.slice(home().length)}` : p);
+/** @param {number} s unix seconds */
 const ago = (s) => {
   if (!s) return "";
   const d = Date.now() / 1000 - s;
   return d < 3600 ? `${Math.max(1, Math.round(d / 60))}m` : d < DAY ? `${Math.round(d / 3600)}h` : d < DAY * 60 ? `${Math.round(d / DAY)}d` : `${Math.round(d / DAY / 30)}mo`;
 };
 
+/** @param {string} cwd @param {string[]} args */
 async function git(cwd, args) {
   const r = await exec("git", args, { cwd });
   return { ok: r.code === 0, out: (r.stdout ?? "").trim(), err: (r.stderr || r.stdout || "").trim() };
 }
 
+/**
+ * Runs fn over items, at most `size` at a time.
+ * @template T
+ * @param {T[]} items
+ * @param {number} size
+ * @param {(item: T, i: number) => Promise<void>} fn
+ */
 async function pool(items, size, fn) {
   let next = 0;
   const worker = async () => {
@@ -58,9 +106,11 @@ async function sweep() {
   await exec("sh", ["-c", '[ -d "$1" ] || exit 0; (for d in "$1"/*; do [ -e "$d" ] && rm -rf "$d" & done; wait) >/dev/null 2>&1 &', "sweep", TRASH()]);
 }
 
+/** @returns {Promise<Folder[]>} */
 async function folders() {
   const root = ROOT();
   if (!(await fs.exists(root))) return [];
+  /** @type {Folder[]} */
   const out = [];
   for (const repo of await fs.readdir(root, { withFileTypes: true })) {
     if (!repo.isDirectory()) continue;
@@ -71,14 +121,17 @@ async function folders() {
   return out;
 }
 
-async function probe(c) {
-  const r = await exec("sh", ["-c", PROBE, "probe", c.path]);
-  if (r.code !== 0) return { ...c, registered: false };
+/** @param {Folder} f @returns {Promise<Checkout>} */
+async function probe(f) {
+  const folder = { repo: f.repo, path: f.path, name: f.name };
+  const r = await exec("sh", ["-c", PROBE, "probe", f.path]);
+  if (r.code !== 0) return { ...folder, registered: false, main: "", branch: null, head: null, at: 0, unpushed: 0, dirty: 0 };
+  /** @type {Record<string, string>} */
   const v = Object.fromEntries(r.stdout.trim().split("\n").map((l) => [l.slice(0, l.indexOf("\t")), l.slice(l.indexOf("\t") + 1)]));
   const main = v.common.endsWith("/.git") ? v.common.slice(0, -5) : v.common;
   return {
-    ...c,
-    registered: v.top === c.path && main !== c.path,
+    ...folder,
+    registered: v.top === f.path && main !== f.path,
     main,
     branch: v.branch || null,
     head: v.head || null,
@@ -89,47 +142,61 @@ async function probe(c) {
 }
 
 // What git says about a checkout, without its PR.
+/** @type {(keyof Checkout)[]} */
 const FIELDS = ["registered", "main", "branch", "head", "unpushed", "dirty"];
+/** @param {Checkout} a @param {Checkout} b */
 const changed = (a, b) => FIELDS.some((k) => a[k] !== b[k]);
 
-// The PR for a branch: an open one if there is one, else the newest.
+/**
+ * The PR for a branch: an open one if there is one, else the newest.
+ * @param {Checkout & { branch: string }} c
+ * @returns {Promise<PrLookup>}
+ */
 async function prOf(c) {
   const r = await exec("gh", ["pr", "list", "--head", c.branch, "--state", "all", "--limit", "20", "--json", "number,state,headRefOid,url"], { cwd: c.main });
   if (r.code !== 0) return { error: (r.stderr || r.stdout).trim() || "gh failed" };
+  /** @type {PullRequest[]} */
   const prs = JSON.parse(r.stdout || "[]");
   return prs.find((p) => p.state === "OPEN") ?? prs.sort((a, b) => b.number - a.number)[0] ?? null;
 }
 
+/** @param {Checkout} c */
 function inUse(c) {
-  const folders = [
+  /** @type {(string | null | undefined)[]} */
+  const where = [
     ...spaces().map((s) => s.folder),
     ...panes().map((p) => p.cwd),
     ...terminals().filter((t) => t.state !== "finished").map((t) => t.cwd),
   ];
-  return folders.some((f) => f && inside(f, c.path));
+  return where.some((f) => f && inside(f, c.path));
 }
 
-// status: what the row says. safe: removing loses nothing git can't get back.
-// purge: the rules include it.
+/** @param {Checkout} c @param {Rules} rules @returns {Assessment} */
 function assess(c, rules) {
+  /** @type {string[]} */
   const notes = [];
+  const lookup = c.pr ?? null;
+  /** @type {PullRequest | null} */
+  const pr = lookup && "number" in lookup ? lookup : null;
+  const prError = lookup && "error" in lookup ? lookup.error : null;
   if (c.dirty) notes.push(`${c.dirty} changed file${c.dirty === 1 ? "" : "s"}`);
-  if (c.pr?.number) notes.push(`PR #${c.pr.number}`);
+  if (pr) notes.push(`PR #${pr.number}`);
   const used = inUse(c);
   if (!c.registered) return { status: "not a worktree", tone: "blocked", safe: false, purge: false, notes: ["git doesn't track this folder"] };
   if (!c.branch) return { status: "detached", tone: "muted", safe: false, purge: false, notes };
-  if (c.pr?.error) return { status: "PR unknown", tone: "blocked", safe: false, purge: false, notes: [c.pr.error] };
+  if (prError) return { status: "PR unknown", tone: "blocked", safe: false, purge: false, notes: [prError] };
+  /** @type {Omit<Assessment, "notes">} */
   let r;
-  if (c.pr && c.pr.state !== "OPEN") {
-    const same = c.head === c.pr.headRefOid;
+  if (pr && pr.state !== "OPEN") {
+    const same = c.head === pr.headRefOid;
     if (!same) notes.push("local commits differ from the PR");
-    const merged = c.pr.state === "MERGED";
+    const merged = pr.state === "MERGED";
     r = { status: merged ? "merged" : "closed", tone: merged ? "done" : "muted", safe: same, purge: same && (merged ? rules.merged : rules.closed) };
-  } else if (c.pr) {
+  } else if (pr) {
     r = { status: "PR open", tone: "working", safe: false, purge: false };
   } else {
     if (c.unpushed) notes.push(`${c.unpushed} commit${c.unpushed === 1 ? "" : "s"} on no remote`);
-    const old = c.at && Date.now() / 1000 - c.at > rules.staleDays * DAY;
+    const old = c.at > 0 && Date.now() / 1000 - c.at > rules.staleDays * DAY;
     r = { status: "no PR", tone: "dim", safe: !c.unpushed, purge: !c.unpushed && rules.stale && old };
   }
   if (c.dirty) r = { ...r, status: "changes", tone: "blocked", safe: false, purge: false };
@@ -137,17 +204,24 @@ function assess(c, rules) {
   return { ...r, notes };
 }
 
+/** @type {Status[]} */
 const ORDER = ["merged", "closed", "no PR", "PR open", "detached", "PR unknown", "changes", "in use", "not a worktree"];
 
 export default class WorktreeJanitor extends View {
+  /** @param {unknown} _props @param {AsyncContext} cx */
   init(_props, cx) {
+    /** @type {Checkout[]} */
     this.list = [];
+    /** Last full check, ms since the epoch; 0 before the first. */
+    this.checkedAt = 0;
     this.loading = false;
     this.progress = "";
     this.error = "";
-    this.confirm = null; // a row's path, or "purge"
-    this.busy = null; // a row's path, or "purge"
-    const cache = shared(CACHE);
+    /** @type {string | null} a row's path, or "purge" */
+    this.confirm = null;
+    /** @type {string | null} a row's path, or "purge" */
+    this.busy = null;
+    const cache = /** @type {Cache | undefined} */ (shared(CACHE));
     if (cache?.list) {
       this.list = cache.list;
       this.checkedAt = cache.at;
@@ -162,20 +236,25 @@ export default class WorktreeJanitor extends View {
   }
 
   save() {
-    setShared(CACHE, { at: this.checkedAt, list: this.list });
+    setShared(CACHE, /** @type {Cache} */ ({ at: this.checkedAt, list: this.list }));
   }
 
+  /** @returns {Rules} */
   rules() {
-    return { ...DEFAULT_RULES, ...(shared(RULES) ?? {}) };
+    return { ...DEFAULT_RULES, .../** @type {Partial<Rules> | undefined} */ (shared(RULES)) };
   }
 
+  /** @param {Rule} key @param {boolean} value */
   setRule(key, value) {
     setShared(RULES, { ...this.rules(), [key]: value });
     this.confirm = null;
   }
 
-  // Checks every checkout, or with onlyNew, only folders the cache doesn't have yet
-  // (and drops the ones that are gone). The cache's age is that of the last full check.
+  /**
+   * Checks every checkout, or with onlyNew, only folders the cache doesn't have yet
+   * (and drops the ones that are gone). The cache's age is that of the last full check.
+   * @param {Context} cx
+   */
   refresh(cx, { onlyNew = false } = {}) {
     if (this.loading) return;
     this.loading = true;
@@ -187,13 +266,14 @@ export default class WorktreeJanitor extends View {
         const all = await folders();
         const known = new Map(onlyNew ? this.list.map((c) => [c.path, c]) : []);
         const found = all.filter((f) => !known.has(f.path));
-        const list = all.filter((f) => known.has(f.path)).map((f) => known.get(f.path));
+        /** @type {Checkout[]} */
+        const list = all.filter((f) => known.has(f.path)).map((f) => /** @type {Checkout} */ (known.get(f.path)));
         let done = 0;
         this.progress = `checking 0/${found.length}`;
         cx.notify();
         await pool(found, 6, async (f) => {
           const c = await probe(f);
-          if (c.registered && c.branch) c.pr = await prOf(c);
+          if (c.registered && c.branch) c.pr = await prOf({ ...c, branch: c.branch });
           list.push(c);
           this.progress = `checking ${++done}/${found.length}`;
           cx.notify();
@@ -210,6 +290,7 @@ export default class WorktreeJanitor extends View {
     });
   }
 
+  /** @returns {Row[]} */
   rows() {
     const rules = this.rules();
     return this.list
@@ -217,6 +298,7 @@ export default class WorktreeJanitor extends View {
       .sort((a, b) => ORDER.indexOf(a.status) - ORDER.indexOf(b.status) || a.at - b.at || a.name.localeCompare(b.name));
   }
 
+  /** @param {Checkout} c */
   open(c) {
     closeOverlay(props().overlay);
     const s = spaces().find((s) => s.folder && inside(s.folder, c.path));
@@ -224,13 +306,16 @@ export default class WorktreeJanitor extends View {
     else run("space.new", { folder: c.path });
   }
 
-  // Checks the checkout again first: the row may be from an old cache. If git
-  // says something else now, the row is updated and nothing is removed.
-  // Then closes what's in the checkout, moves its folder to TRASH, lets git forget
-  // it and deletes its local branch. The folder itself is deleted by sweep().
-  // Returns an error, or "".
+  /**
+   * Checks the checkout again first: the row may be from an old cache. If git
+   * says something else now, the row is updated and nothing is removed.
+   * Then closes what's in the checkout, moves its folder to TRASH, lets git forget
+   * it and deletes its local branch. The folder itself is deleted by sweep().
+   * @param {Row} c
+   * @returns {Promise<string>} an error, or ""
+   */
   async remove(c) {
-    const now = await probe({ repo: c.repo, path: c.path, name: c.name });
+    const now = await probe(c);
     if (changed(now, c)) {
       this.list = this.list.map((x) => (x.path === c.path ? { ...now, pr: x.pr } : x));
       this.save();
@@ -264,6 +349,7 @@ export default class WorktreeJanitor extends View {
     return "";
   }
 
+  /** @param {Row} c @param {Context} cx */
   removeRow(c, cx) {
     if (this.busy) return;
     if (!c.safe && this.confirm !== c.path) {
@@ -282,6 +368,7 @@ export default class WorktreeJanitor extends View {
     });
   }
 
+  /** @param {Context} cx */
   purge(cx) {
     const targets = this.rows().filter((c) => c.purge);
     if (this.busy || !targets.length) return;
@@ -294,6 +381,7 @@ export default class WorktreeJanitor extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       // One after another: they are quick now, and git locks the branch refs.
+      /** @type {string[]} */
       const failed = [];
       for (const c of targets) {
         const err = await this.remove(c);
@@ -313,15 +401,23 @@ export default class WorktreeJanitor extends View {
     });
   }
 
-  render(cx) {
-    const t = theme();
+  render() {
+    // herdr.d.ts types theme colors as plain strings; they are always hex.
+    const t = /** @type {Record<string, Color>} */ (theme());
     const rules = this.rules();
     const rows = this.rows();
     const purgeable = rows.filter((c) => c.purge).length;
     // How many each rule purges on its own (the rules never overlap).
+    /** @param {Rule} key */
     const only = (key) => this.list.filter((c) => assess(c, { ...rules, merged: false, closed: false, stale: false, [key]: true }).purge).length;
     const matches = { merged: only("merged"), closed: only("closed"), stale: only("stale") };
 
+    /**
+     * @param {string} id
+     * @param {string | Element} label
+     * @param {(cx: Context) => void} onClick
+     * @param {{ tone?: Tone, disabled?: boolean }} [opts]
+     */
     const button = (id, label, onClick, { tone, disabled } = {}) =>
       h_flex()
         .id(id)
@@ -337,9 +433,11 @@ export default class WorktreeJanitor extends View {
         .when(!disabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => onClick(cx)))
         .child(label);
 
+    /** @param {string} label */
     const working = (label) =>
       h_flex().gap(6).items_center().child(svg("mods/worktree-janitor/spinner.svg").w(12).h(12).text_color(t.muted).spin(900)).child(label);
 
+    /** @param {string} id @param {string} label @param {boolean} on @param {() => void} onClick */
     const toggle = (id, label, on, onClick) =>
       h_flex()
         .id(id)
@@ -351,6 +449,7 @@ export default class WorktreeJanitor extends View {
         .child(div().w(14).h(14).rounded(3).border(1).border_color(on ? t.accent : t.input).when(on, (el) => el.bg(t.accent)))
         .child(label);
 
+    /** @param {Row} c */
     const row = (c) => {
       const confirming = this.confirm === c.path;
       const busy = this.busy === c.path;
@@ -399,7 +498,7 @@ export default class WorktreeJanitor extends View {
               .items_end()
               .gap(2)
               .child(button("refresh", this.loading ? this.progress || "checking…" : "refresh", (cx) => this.refresh(cx), { disabled: this.loading || Boolean(this.busy) }))
-              .when(Boolean(this.checkedAt), (el) =>
+              .when(this.checkedAt > 0, (el) =>
                 el.child(div().text_size(11).text_color(t.dim).child(Date.now() - this.checkedAt < 60000 ? "checked just now" : `checked ${ago(this.checkedAt / 1000)} ago`)),
               ),
           ),

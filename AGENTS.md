@@ -7,6 +7,7 @@ Personal mods for the [Herdr desktop app](https://herdr.dev) (herdr-app).
 - `<mod>/`: one folder per mod, in the herdr.dev/mods format: `<mod>/mods/<name>/` (`main.js`, `mod.json`, assets; same shape as `~/.config/herdr-app/mods/<name>/`), `<mod>/keys.json`, `<mod>/preview.png`, `<mod>/README.md`, and a `<mod>/RECIPE.md` before publishing.
 - `keys.json`: bindings to merge into `~/.config/herdr-app/keys.json`. Never overwrite the user's file.
 - `install.sh`: symlinks each `*/mods/<name>/` into `~/.config/herdr-app/mods/`. herdr-app follows the symlink and reloads on save.
+- `check.sh`: type-checks and loads every mod.
 - Root `README.md` has a table with one row per mod. Add a row when adding a mod.
 - `preview.png`: `herdr-app shot` of the window, cropped to the mod (`sips -c <h> <w> --cropOffset <y> <x>`).
 
@@ -14,7 +15,8 @@ Personal mods for the [Herdr desktop app](https://herdr.dev) (herdr-app).
 
 - The mod API is described in `~/.config/herdr-app/AGENTS.md`, `herdr.d.ts` and `gpui-kit.d.ts`. herdr-app rewrites them on every start; read them, never copy them here.
 - herdr-app writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder. They are git-ignored.
-- After every change: `herdr-app check ~/.config/herdr-app/mods/<name>`, then open the mod (`herdr-app do mod.open --name <name>`) and look at it (`herdr-app shot`).
+- **Mods are JavaScript typed with JSDoc.** herdr-app runs no TypeScript: a folder without `main.js` is refused, and type annotations in `.js` or `.ts` files fail to parse ("missing initializer for variable"). Type every function, class field and callback with JSDoc; import types with `/** @typedef {import("gpui-kit").Context} Context */` (also `AsyncContext`, `Color`, `Element`). `theme()` is typed `Record<string, string>` but `.bg()` and friends want `Color` (`#…`): cast once, `/** @type {Record<string, Color>} */ (theme())`. Cast `shared()` results to their shape.
+- After every change: `./check.sh` (tsc with the app's strict `jsconfig.json`, then `herdr-app check`; must report 0 errors), then open the mod (`herdr-app do mod.open --name <name>`) and look at it (`herdr-app shot`).
 - Marketplace format (if a mod is published): the `<mod>/` folder above with a `RECIPE.md` (structure in `~/.config/herdr-app/AGENTS.md`, "Layouts and mods other people made"), no `layouts/`, repo topic `herdr-mod`.
 - Keep each mod's README honest: its "What this does to your machine" section lists every program it runs, every file it writes and every network call. Update it with the code.
 - Keep `RECIPE.md` in step with the code: sizes, labels, colors and behavior it states must be what `main.js` does. Structure: `~/.config/herdr-app/AGENTS.md`, "Layouts and mods other people made".

@@ -28,12 +28,12 @@ git clone git@github.com:backevik/herdr-mods.git && cd herdr-mods
 `install.sh` symlinks every `*/mods/<name>/` into `~/.config/herdr-app/mods/`. Herdr follows the link, so a save in this repo reloads the mod in the app. Then:
 
 ```sh
-herdr-app check ~/.config/herdr-app/mods/<name>   # loads the mod once, fails on errors
+./check.sh                                        # tsc + herdr-app check, every mod
 herdr-app do mod.open --name <name>               # open it
 herdr-app shot preview.png                        # screenshot the window
 ```
 
-Herdr writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder for editor types. They are git-ignored. See [AGENTS.md](AGENTS.md) for conventions.
+Herdr runs plain JavaScript only (a `main.ts` is refused, and type annotations don't parse), so mods are `.js` typed with [JSDoc](https://www.typescriptlang.org/docs/handbook/jsdoc-supported-types.html). `check.sh` type-checks them with `tsc` (through `npx`, nothing to install) against the `gpui-kit.d.ts` Herdr writes into each mod folder. That file and `jsconfig.json` appear the first time the app loads the mod, and are git-ignored. See [AGENTS.md](AGENTS.md) for conventions.
 
 ## License
 
