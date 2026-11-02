@@ -3,44 +3,26 @@
 // checkout, its folder and its local branch. Purge removes every checkout the rules allow.
 //
 // Plain JavaScript (herdr-app runs no TypeScript), typed with JSDoc against the app's
-// gpui-kit.d.ts. `../../../check.sh` type-checks it.
+// gpui-kit.d.ts. This file gathers facts and acts; logic.js decides.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
 import { exec, home, spaces, panes, terminals, theme, run, notify, props, closeOverlay, shared, setShared } from "herdr";
 import * as fs from "fs/promises";
+import { DEFAULT_RULES, inside, ago, isCheckoutPath, parseProbe, pickPr, changed, ruleCounts, rows as rowsOf } from "./logic.js";
 
 /** @typedef {import("gpui-kit").Context} Context */
 /** @typedef {import("gpui-kit").AsyncContext} AsyncContext */
 /** @typedef {import("gpui-kit").Color} Color */
 /** @typedef {import("gpui-kit").Element} Element */
-
-/** @typedef {{ merged: boolean, closed: boolean, stale: boolean, staleDays: number }} Rules */
-/** @typedef {"merged" | "closed" | "stale"} Rule */
-/** @typedef {{ repo: string, path: string, name: string }} Folder */
-/** @typedef {{ number: number, state: "OPEN" | "MERGED" | "CLOSED", headRefOid: string, url: string }} PullRequest */
-/** @typedef {PullRequest | { error: string } | null} PrLookup */
-/**
- * What git says about a checkout, and its PR once looked up.
- * @typedef {Folder & {
- *   registered: boolean,
- *   main: string,
- *   branch: string | null,
- *   head: string | null,
- *   at: number,
- *   unpushed: number,
- *   dirty: number,
- *   pr?: PrLookup,
- * }} Checkout
- */
-/** @typedef {"merged" | "closed" | "no PR" | "PR open" | "detached" | "PR unknown" | "changes" | "in use" | "not a worktree"} Status */
-/** @typedef {"done" | "muted" | "dim" | "working" | "blocked" | "accent"} Tone */
-/**
- * status: what the row says. safe: removing loses nothing git can't get back.
- * purge: the rules include it.
- * @typedef {{ status: Status, tone: Tone, safe: boolean, purge: boolean, notes: string[] }} Assessment
- */
-/** @typedef {Checkout & Assessment} Row */
+/** @typedef {import("./logic.js").Rules} Rules */
+/** @typedef {import("./logic.js").Rule} Rule */
+/** @typedef {import("./logic.js").Folder} Folder */
+/** @typedef {import("./logic.js").PullRequest} PullRequest */
+/** @typedef {import("./logic.js").PrLookup} PrLookup */
+/** @typedef {import("./logic.js").Checkout} Checkout */
+/** @typedef {import("./logic.js").Tone} Tone */
+/** @typedef {import("./logic.js").Row} Row */
 /** @typedef {{ at: number, list: Checkout[] }} Cache */
 
 const ROOT = () => `${home()}/.herdr/worktrees`;
@@ -48,9 +30,6 @@ const ROOT = () => `${home()}/.herdr/worktrees`;
 const TRASH = () => `${home()}/.herdr/worktrees-trash`;
 const RULES = "worktree-janitor.rules";
 const CACHE = "worktree-janitor.cache";
-/** @type {Rules} */
-const DEFAULT_RULES = { merged: true, closed: false, stale: false, staleDays: 14 };
-const DAY = 86400;
 
 // One exec per checkout: tab-separated key/value lines. The path is passed as $1.
 const PROBE = `
@@ -65,16 +44,8 @@ printf 'unpushed\\t%s\\n' "$(git rev-list --count HEAD --not --remotes 2>/dev/nu
 printf 'dirty\\t%s\\n' "$(git --no-optional-locks -c core.fsmonitor=false status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 `;
 
-/** @param {string} p @param {string} dir */
-const inside = (p, dir) => p === dir || p.startsWith(dir + "/");
 /** @param {string} p */
 const tilde = (p) => (p.startsWith(home()) ? `~${p.slice(home().length)}` : p);
-/** @param {number} s unix seconds */
-const ago = (s) => {
-  if (!s) return "";
-  const d = Date.now() / 1000 - s;
-  return d < 3600 ? `${Math.max(1, Math.round(d / 60))}m` : d < DAY ? `${Math.round(d / 3600)}h` : d < DAY * 60 ? `${Math.round(d / DAY)}d` : `${Math.round(d / DAY / 30)}mo`;
-};
 
 /** @param {string} cwd @param {string[]} args */
 async function git(cwd, args) {
@@ -123,29 +94,9 @@ async function folders() {
 
 /** @param {Folder} f @returns {Promise<Checkout>} */
 async function probe(f) {
-  const folder = { repo: f.repo, path: f.path, name: f.name };
   const r = await exec("sh", ["-c", PROBE, "probe", f.path]);
-  if (r.code !== 0) return { ...folder, registered: false, main: "", branch: null, head: null, at: 0, unpushed: 0, dirty: 0 };
-  /** @type {Record<string, string>} */
-  const v = Object.fromEntries(r.stdout.trim().split("\n").map((l) => [l.slice(0, l.indexOf("\t")), l.slice(l.indexOf("\t") + 1)]));
-  const main = v.common.endsWith("/.git") ? v.common.slice(0, -5) : v.common;
-  return {
-    ...folder,
-    registered: v.top === f.path && main !== f.path,
-    main,
-    branch: v.branch || null,
-    head: v.head || null,
-    at: Number(v.at) || 0,
-    unpushed: Number(v.unpushed) || 0,
-    dirty: Number(v.dirty) || 0,
-  };
+  return parseProbe(f, r.code, r.stdout);
 }
-
-// What git says about a checkout, without its PR.
-/** @type {(keyof Checkout)[]} */
-const FIELDS = ["registered", "main", "branch", "head", "unpushed", "dirty"];
-/** @param {Checkout} a @param {Checkout} b */
-const changed = (a, b) => FIELDS.some((k) => a[k] !== b[k]);
 
 /**
  * The PR for a branch: an open one if there is one, else the newest.
@@ -155,9 +106,7 @@ const changed = (a, b) => FIELDS.some((k) => a[k] !== b[k]);
 async function prOf(c) {
   const r = await exec("gh", ["pr", "list", "--head", c.branch, "--state", "all", "--limit", "20", "--json", "number,state,headRefOid,url"], { cwd: c.main });
   if (r.code !== 0) return { error: (r.stderr || r.stdout).trim() || "gh failed" };
-  /** @type {PullRequest[]} */
-  const prs = JSON.parse(r.stdout || "[]");
-  return prs.find((p) => p.state === "OPEN") ?? prs.sort((a, b) => b.number - a.number)[0] ?? null;
+  return pickPr(/** @type {PullRequest[]} */ (JSON.parse(r.stdout || "[]")));
 }
 
 /** @param {Checkout} c */
@@ -170,42 +119,6 @@ function inUse(c) {
   ];
   return where.some((f) => f && inside(f, c.path));
 }
-
-/** @param {Checkout} c @param {Rules} rules @returns {Assessment} */
-function assess(c, rules) {
-  /** @type {string[]} */
-  const notes = [];
-  const lookup = c.pr ?? null;
-  /** @type {PullRequest | null} */
-  const pr = lookup && "number" in lookup ? lookup : null;
-  const prError = lookup && "error" in lookup ? lookup.error : null;
-  if (c.dirty) notes.push(`${c.dirty} changed file${c.dirty === 1 ? "" : "s"}`);
-  if (pr) notes.push(`PR #${pr.number}`);
-  const used = inUse(c);
-  if (!c.registered) return { status: "not a worktree", tone: "blocked", safe: false, purge: false, notes: ["git doesn't track this folder"] };
-  if (!c.branch) return { status: "detached", tone: "muted", safe: false, purge: false, notes };
-  if (prError) return { status: "PR unknown", tone: "blocked", safe: false, purge: false, notes: [prError] };
-  /** @type {Omit<Assessment, "notes">} */
-  let r;
-  if (pr && pr.state !== "OPEN") {
-    const same = c.head === pr.headRefOid;
-    if (!same) notes.push("local commits differ from the PR");
-    const merged = pr.state === "MERGED";
-    r = { status: merged ? "merged" : "closed", tone: merged ? "done" : "muted", safe: same, purge: same && (merged ? rules.merged : rules.closed) };
-  } else if (pr) {
-    r = { status: "PR open", tone: "working", safe: false, purge: false };
-  } else {
-    if (c.unpushed) notes.push(`${c.unpushed} commit${c.unpushed === 1 ? "" : "s"} on no remote`);
-    const old = c.at > 0 && Date.now() / 1000 - c.at > rules.staleDays * DAY;
-    r = { status: "no PR", tone: "dim", safe: !c.unpushed, purge: !c.unpushed && rules.stale && old };
-  }
-  if (c.dirty) r = { ...r, status: "changes", tone: "blocked", safe: false, purge: false };
-  if (used) r = { ...r, status: "in use", tone: "accent", safe: false, purge: false };
-  return { ...r, notes };
-}
-
-/** @type {Status[]} */
-const ORDER = ["merged", "closed", "no PR", "PR open", "detached", "PR unknown", "changes", "in use", "not a worktree"];
 
 export default class WorktreeJanitor extends View {
   /** @param {unknown} _props @param {AsyncContext} cx */
@@ -292,10 +205,7 @@ export default class WorktreeJanitor extends View {
 
   /** @returns {Row[]} */
   rows() {
-    const rules = this.rules();
-    return this.list
-      .map((c) => ({ ...c, ...assess(c, rules) }))
-      .sort((a, b) => ORDER.indexOf(a.status) - ORDER.indexOf(b.status) || a.at - b.at || a.name.localeCompare(b.name));
+    return rowsOf(this.list, this.rules(), inUse);
   }
 
   /** @param {Checkout} c */
@@ -321,8 +231,7 @@ export default class WorktreeJanitor extends View {
       this.save();
       return "changed since it was checked, look again";
     }
-    const rel = c.path.slice(ROOT().length + 1).split("/");
-    if (!c.path.startsWith(ROOT() + "/") || rel.length !== 2 || rel.includes("..")) return "refusing to touch a folder outside the worktrees folder";
+    if (!isCheckoutPath(c.path, ROOT())) return "refusing to touch a folder outside the worktrees folder";
     for (const s of spaces()) {
       const tabs = new Set(s.tabs.map((t) => t.id));
       const there = [s.folder, ...panes().filter((p) => tabs.has(p.tab)).map((p) => p.cwd)];
@@ -407,10 +316,7 @@ export default class WorktreeJanitor extends View {
     const rules = this.rules();
     const rows = this.rows();
     const purgeable = rows.filter((c) => c.purge).length;
-    // How many each rule purges on its own (the rules never overlap).
-    /** @param {Rule} key */
-    const only = (key) => this.list.filter((c) => assess(c, { ...rules, merged: false, closed: false, stale: false, [key]: true }).purge).length;
-    const matches = { merged: only("merged"), closed: only("closed"), stale: only("stale") };
+    const matches = ruleCounts(this.list, rules, inUse);
 
     /**
      * @param {string} id

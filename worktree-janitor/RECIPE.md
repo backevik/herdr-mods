@@ -59,7 +59,7 @@ Rows are sorted in that order, then oldest commit first. "in use" wins over "cha
 
 ## Built from
 
-- **One mod**, `mods/worktree-janitor/`: `main.js`, `mod.json` and `spinner.svg` (a 24px ring: a faint full circle and a quarter arc, `stroke="currentColor"`). No `layouts/` folder.
+- **One mod**, `mods/worktree-janitor/`: `main.js` (facts and UI), `logic.js` (statuses, safety, purge rules, sorting, probe parsing and the path guard, with no Herdr imports so `node --test` can run it), `mod.json` and `spinner.svg` (a 24px ring: a faint full circle and a quarter arc, `stroke="currentColor"`). No `layouts/` folder.
 - **`mod.json`:** `{ "place": "none", "title": "Worktrees", "overlay": { "kind": "dialog", "width": 860, "height": 0.8 } }`.
 - **`keys.json` snippet**, merged into the person's keys: `{ "global": { "ctrl-alt-cmd-j": "mod.open:worktree-janitor" } }`.
 - **A `View`** in plain JavaScript (herdr-app runs no TypeScript), typed with JSDoc against the app's `gpui-kit.d.ts`, using `gpui-kit` (`div`, `svg`), `gpui-base` (`v_flex`, `h_flex`, `Scrollbar`) and `herdr` (`exec`, `home`, `spaces`, `panes`, `terminals`, `theme`, `run`, `notify`, `props`, `closeOverlay`, `shared`, `setShared`). Buttons and checkboxes are plain styled `h_flex` and `div` elements with `on_click`. The spinner is `svg("mods/worktree-janitor/spinner.svg").w(12).h(12).spin(900)`.
@@ -86,6 +86,7 @@ Rows are sorted in that order, then oldest commit first. "in use" wins over "cha
 ## Done when
 
 - `herdr-app check mods/worktree-janitor` passes, and `tsc -p mods/worktree-janitor/jsconfig.json` reports no errors.
+- The `logic.js` tests pass: merged with a matching head is safe and purged; a different head, changes, in use, an open PR, detached, not a worktree and a failed lookup never are; the rule counts add up to the purge count.
 - `ctrl-alt-cmd-j` opens the dialog; opening it a second time shows the list at once, with "checked … ago" under refresh.
 - Every checkout in `~/.herdr/worktrees/*/*` has a row, and its status and notes match `git status`, `git rev-list` and `gh pr list --head` run by hand.
 - A checkout open in a space shows "in use" and is never counted for purge; closing the space changes it without a refresh.

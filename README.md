@@ -22,18 +22,26 @@ Or follow the install steps in each mod's README.
 
 ```sh
 git clone git@github.com:backevik/herdr-mods.git && cd herdr-mods
+npm ci
 ./install.sh
 ```
 
 `install.sh` symlinks every `*/mods/<name>/` into `~/.config/herdr-app/mods/`. Herdr follows the link, so a save in this repo reloads the mod in the app. Then:
 
 ```sh
-./check.sh                                        # tsc + herdr-app check, every mod
+./check.sh                                        # typecheck + tests + herdr-app check, every mod
 herdr-app do mod.open --name <name>               # open it
 herdr-app shot preview.png                        # screenshot the window
 ```
 
-Herdr runs plain JavaScript only (a `main.ts` is refused, and type annotations don't parse), so mods are `.js` typed with [JSDoc](https://www.typescriptlang.org/docs/handbook/jsdoc-supported-types.html). `check.sh` type-checks them with `tsc` (through `npx`, nothing to install) against the `gpui-kit.d.ts` Herdr writes into each mod folder. That file and `jsconfig.json` appear the first time the app loads the mod, and are git-ignored. See [AGENTS.md](AGENTS.md) for conventions.
+Herdr runs plain JavaScript only (a `main.ts` is refused, and type annotations don't parse), so mods are `.js` typed with [JSDoc](https://www.typescriptlang.org/docs/handbook/jsdoc-supported-types.html) and checked with `tsc`.
+
+- **Logic and UI are split.** `logic.js` in a mod folder holds the decisions and imports nothing from Herdr, so `node --test` runs it. `main.js` gathers facts (git, `gh`, live spaces) and draws.
+- **Tests** live in `<mod>/test/*.test.js`, outside the mod folder, so they aren't installed.
+- **Types:** `types/gpui-kit.d.ts` is a committed copy of the declarations Herdr writes into each mod folder, for CI, which has no Herdr app. After updating Herdr, run `scripts/update-types.sh` and commit it; `./check.sh` warns when it is out of date.
+- **CI** (`.github/workflows/ci.yml`) runs `npm run typecheck` and `npm test` on every push to `main` and every PR. `herdr-app check` needs the desktop app, so it only runs in `./check.sh`.
+
+See [AGENTS.md](AGENTS.md) for conventions.
 
 ## License
 

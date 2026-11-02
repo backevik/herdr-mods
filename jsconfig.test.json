@@ -1,0 +1,15 @@
+{
+  "// why": "Type-checks the tests and the Herdr-free modules they import, with Node's types. Kept apart from jsconfig.json: gpui-kit.d.ts declares its own fs/promises, process and console, which clash with @types/node.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "checkJs": true,
+    "allowJs": true,
+    "strict": true,
+    "noEmit": true
+  },
+  "include": ["*/test/*.js"]
+}

@@ -1,0 +1,16 @@
+{
+  "// why": "Type-checks the mods as herdr-app runs them: its own jsconfig.json options, against the committed types/gpui-kit.d.ts, without Node's types (the app is not Node).",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": [],
+    "checkJs": true,
+    "allowJs": true,
+    "strict": true,
+    "strictNullChecks": false,
+    "noEmit": true
+  },
+  "include": ["types/gpui-kit.d.ts", "*/mods/*/*.js"]
+}
