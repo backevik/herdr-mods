@@ -1,0 +1,4 @@
+# Written by herdr-app into every mod folder it loads
+gpui-kit.d.ts
+jsconfig.json
+.DS_Store

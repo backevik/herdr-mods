@@ -1,0 +1,5 @@
+{
+  "global": {
+    "ctrl-alt-cmd-j": "mod.open:worktree-janitor"
+  }
+}
