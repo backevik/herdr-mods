@@ -1,4 +1,7 @@
-# Written by herdr-app into every mod folder it loads
+# Written by herdr-app into every mod folder it loads (types/ holds the committed copy)
 gpui-kit.d.ts
 jsconfig.json
+!/jsconfig.json
+!/types/gpui-kit.d.ts
+node_modules/
 .DS_Store
