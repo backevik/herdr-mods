@@ -29,6 +29,13 @@ Personal mods for the [Herdr desktop app](https://herdr.dev) (herdr-app).
 
 ## Mods
 
+### annotator-open (`annotator-open/`)
+
+A launcher with no UI: `mod.open:annotator-open` toggles the third-party `annotator` mod ([herdr-annotator](https://github.com/jakub-tucek/herdr-annotator)) as a pane in the focused tab (split right → focus → close).
+
+- It exists so Annotator's installed files stay unedited. Its updater refuses to update files that don't match its receipt, so never add an `overlay` to `~/.config/herdr-app/mods/annotator/mod.json`.
+- Always pass `pane` to `pane.split`. With a layout terminal block focused, `focused().pane` is null and an implicit split fails.
+
 ### worktree-janitor (`worktree-janitor/`)
 
 Lists every checkout in `~/.herdr/worktrees/<repo>/<checkout>` with a status, and removes them one by one or in bulk ("purge").
