@@ -1,0 +1,5 @@
+{
+  "global": {
+    "ctrl-alt-cmd-u": "mod.open:plan-usage"
+  }
+}

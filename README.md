@@ -6,6 +6,7 @@ Mods for the [Herdr app](https://herdr.dev). Each folder is one mod, laid out th
 | :--- | :--- | :--- |
 | [Worktree Janitor](worktree-janitor/) | Lists every worktree in `~/.herdr/worktrees` with its PR status and removes the ones you're done with, one at a time or with Purge. | `ctrl-alt-cmd-j` |
 | [Annotator Open](annotator-open/) | One key that opens, focuses or closes the [Herdr Annotator](https://github.com/jakub-tucek/herdr-annotator) review pane in the focused tab. | `ctrl-alt-cmd-r` |
+| [Plan Usage](plan-usage/) | Claude, Cursor and OpenCode Go plan usage in the status bar, from the CLIs' own logins, with a dialog of every limit and its reset. | `ctrl-alt-cmd-u` |
 
 <a href="worktree-janitor/"><img src="worktree-janitor/preview.png" alt="Worktree Janitor" width="430"></a>
 
