@@ -6,7 +6,7 @@ Personal mods for the [Herdr desktop app](https://herdr.dev) (herdr-app).
 
 - `<mod>/`: one folder per mod, in the herdr.dev/mods format: `<mod>/mods/<name>/` (`main.js`, `mod.json`, assets; same shape as `~/.config/herdr-app/mods/<name>/`), `<mod>/keys.json`, `<mod>/preview.png`, `<mod>/README.md`, and a `<mod>/RECIPE.md` before publishing.
 - `keys.json`: bindings to merge into `~/.config/herdr-app/keys.json`. Never overwrite the user's file.
-- `install.sh`: symlinks each `*/mods/<name>/` into `~/.config/herdr-app/mods/`. herdr-app follows the symlink and reloads on save.
+- `install.sh`: symlinks each `*/mods/<name>/` into `~/.config/herdr-app/mods/`. herdr-app follows the symlink, but on 0.1.13 it doesn't always reload on save (restart the copy: change its block's `props`, or switch layouts), and a symlinked mod's own SVGs don't draw (use `mods/workspace-chrome/*.svg`). Symlinking single files makes the mod fail to load.
 - `check.sh`: everything CI runs, plus `herdr-app check` per mod and a warning when `types/gpui-kit.d.ts` is stale. Run it after every change.
 - `<mod>/mods/<name>/logic.js`: the mod's decisions, no `herdr`/`gpui-*` imports, pure functions (pass `now` and live facts like "in use" in). `main.js` gathers facts and draws. Anything worth testing goes in `logic.js`.
 - `<mod>/test/*.test.js`: `node:test` tests of `logic.js`. Outside the mod folder so they aren't installed.
@@ -47,3 +47,12 @@ Lists every checkout in `~/.herdr/worktrees/<repo>/<checkout>` with a status, an
 - Purge rules are checkboxes stored in `shared("worktree-janitor.rules")`: merged PRs (on by default), closed PRs and stale no-PR checkouts (off by default). Each shows how many checkouts it matches. The safety conditions that always block purge are listed under them.
 - Results are cached in `shared("worktree-janitor.cache")` (`{at, list}`). Opening the dialog shows the cache and only checks folders it doesn't have (and drops gone ones); `refresh` checks everything and resets `at`. Removing a row drops it from the cache. "in use" is never cached: it is computed from live spaces, panes and terminals.
 - Before removing, the checkout is probed again; if git state differs from the cached row, the row is updated and nothing is removed.
+
+### plan-usage (`plan-usage/`)
+
+Claude, Cursor and OpenCode Go plan usage: a status-bar strip (`props.view: "bar"`, in a clone of the `main` layout) and a dialog (`mod.open:plan-usage`).
+
+- Reads the CLIs' existing logins (Keychain via `security`, opencode's SQLite via `sqlite3 -readonly`); never refreshes, stores or logs a token. Refreshing would rotate Claude Code's refresh token and log it out. No OAuth of its own: a missing login gets a **Log in** button that runs the CLI's login in a `tab.new`.
+- A provider is one adapter in `providers.js` (`{id, name, login, read(now)}`) plus a response parser in `logic.js` returning `Meter`s. `counts: false` for overflow and side products (on-demand, extra usage, Grok Bot): shown, never the headline.
+- Endpoints: OpenCode `zen/go/v1/usage` (its own client uses it); Cursor `cursor.com/api/usage-summary` and `dashboard/get-sand-usage-status`, Claude `api/oauth/usage` (both undocumented). Prior art and endpoint details: [CodexBar](https://github.com/steipete/CodexBar) (`docs/claude.md`, `docs/cursor.md`, `docs/opencode.md`), [ccstatusline](https://github.com/sirmalloc/ccstatusline) (`src/utils/usage-fetch.ts`), opencode's `packages/core/src/usage-limits.ts`.
+- Only numbers go to `shared("plan-usage.cache")`. The bar polls at most every 5 minutes (Claude 429s on more).
