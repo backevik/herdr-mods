@@ -14,10 +14,21 @@ import { openCodeCredential, claudeCredential, cursorCredential, httpState, open
 /** @param {State} state @param {string} message @param {string | null} [plan] @returns {Reading} */
 const fail = (state, message, plan = null) => ({ plan, state, message, meters: [] });
 
-/** A Keychain password (macOS), or null. @param {string} service */
-async function keychain(service) {
+/** A Keychain password (macOS), or null. @param {string} service @param {string} [account] */
+async function keychain(service, account) {
   try {
-    const r = await exec("security", ["find-generic-password", "-s", service, "-w"]);
+    const args = ["find-generic-password", "-s", service, ...(account ? ["-a", account] : []), "-w"];
+    const r = await exec("security", args);
+    return r.code === 0 ? r.stdout.trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The login name, or null. */
+async function userName() {
+  try {
+    const r = await exec("id", ["-un"]);
     return r.code === 0 ? r.stdout.trim() || null : null;
   } catch {
     return null;
@@ -90,7 +101,13 @@ const claude = {
   name: "Claude",
   login: ["claude", "auth", "login", "--claudeai"],
   async read(now) {
-    const cred = claudeCredential([await keychain("Claude Code-credentials"), await readTextFile(`${home()}/.claude/.credentials.json`)], now);
+    // Without an account, `security` returns the first of several same-named items, which can be
+    // a stale login of an earlier account. Claude Code stores its current one under the user name.
+    const account = (await userName()) ?? undefined;
+    const cred = claudeCredential(
+      [await keychain("Claude Code-credentials", account), await keychain("Claude Code-credentials"), await readTextFile(`${home()}/.claude/.credentials.json`)],
+      now,
+    );
     if ("state" in cred) return fail(cred.state, cred.message);
     const plan = cred.plan ? capitalize(cred.plan) : null;
     const r = await call("https://api.anthropic.com/api/oauth/usage", { Authorization: `Bearer ${cred.token}`, "anthropic-beta": "oauth-2025-04-20" });
